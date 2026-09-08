@@ -1,5 +1,7 @@
 import io
-from datetime import date
+import json
+import base64
+from datetime import date, datetime
 
 import streamlit as st
 from PIL import Image as PILImage
@@ -82,6 +84,55 @@ def image_to_jpeg_bytes(uploaded_file):
     img.save(out, format="JPEG", quality=88, optimize=True)
     return out.getvalue()
 
+
+
+def serialize_draft():
+    """Create a portable JSON draft including finding photos."""
+    payload = {
+        "version": "1.1",
+        "saved_at": datetime.now().isoformat(timespec="seconds"),
+        "inspection": {
+            "client": st.session_state.get("client", ""),
+            "site": st.session_state.get("site", ""),
+            "equipment": st.session_state.get("equipment", ""),
+            "equipment_id": st.session_state.get("equipment_id", ""),
+            "inspection_date": st.session_state.get("inspection_date", date.today()).isoformat(),
+            "inspector": st.session_state.get("inspector", ""),
+            "report_ref": st.session_state.get("report_ref", ""),
+            "inspection_type": st.session_state.get("inspection_type", "Visual condition inspection"),
+            "scope": st.session_state.get("scope", ""),
+        },
+        "findings": [],
+    }
+    for finding in st.session_state.findings:
+        item = dict(finding)
+        raw = item.pop("image_bytes", None)
+        item["image_b64"] = base64.b64encode(raw).decode("ascii") if raw else None
+        payload["findings"].append(item)
+    return json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+
+
+def restore_draft(uploaded_file):
+    """Restore a V1.1 JSON draft into the current Streamlit session."""
+    uploaded_file.seek(0)
+    payload = json.loads(uploaded_file.read().decode("utf-8"))
+    if str(payload.get("version")) != "1.1":
+        raise ValueError("Unsupported draft version.")
+    inspection = payload.get("inspection", {})
+    for key in ("client", "site", "equipment", "equipment_id", "inspector",
+                "report_ref", "inspection_type", "scope"):
+        st.session_state[key] = inspection.get(key, "")
+    date_text = inspection.get("inspection_date")
+    st.session_state["inspection_date"] = date.fromisoformat(date_text) if date_text else date.today()
+
+    restored = []
+    for finding in payload.get("findings", []):
+        item = dict(finding)
+        encoded = item.pop("image_b64", None)
+        item["image_bytes"] = base64.b64decode(encoded) if encoded else None
+        restored.append(item)
+    st.session_state.findings = restored
+    st.session_state["draft_saved_at"] = payload.get("saved_at", "")
 
 def footer(canvas, doc):
     canvas.saveState()
@@ -199,7 +250,7 @@ def build_pdf(report, findings):
 
 
 st.title("🔎 Site Defect Report")
-st.markdown('<div class="muted">Mobile-first MVP • capture photo → record finding → generate PDF</div>', unsafe_allow_html=True)
+st.markdown('<div class="muted">Mobile-first V1.1 • capture photo → record finding → save draft → generate PDF</div>', unsafe_allow_html=True)
 
 with st.expander("📋 Inspection details", expanded=not bool(st.session_state.findings)):
     client = st.text_input("Client", key="client")
@@ -288,6 +339,47 @@ else:
                 st.session_state.findings.pop(i)
                 st.rerun()
 
+
+st.divider()
+st.subheader("💾 Persistent draft")
+st.caption(
+    "Save a portable draft to your phone. It includes inspection details, findings and compressed photos. "
+    "After a browser refresh or Streamlit session restart, upload this JSON file to restore the inspection."
+)
+
+draft_bytes = serialize_draft()
+draft_name_base = clean(st.session_state.get("report_ref", "")) or clean(
+    st.session_state.get("equipment_id", "")
+) or "inspection_draft"
+draft_name_base = "".join(c if c.isalnum() or c in "-_" else "_" for c in draft_name_base)
+
+st.download_button(
+    "💾 SAVE DRAFT TO PHONE",
+    data=draft_bytes,
+    file_name=f"{draft_name_base}.inspection.json",
+    mime="application/json",
+    use_container_width=True,
+)
+st.caption("Save the draft after every few findings, especially before moving to an area with weak coverage.")
+
+draft_upload = st.file_uploader(
+    "Restore saved draft",
+    type=["json"],
+    key="draft_restore_file",
+    help="Select a .inspection.json draft previously saved from this app.",
+)
+if draft_upload is not None:
+    if st.button("♻️ RESTORE THIS DRAFT", use_container_width=True):
+        try:
+            restore_draft(draft_upload)
+            st.success("Draft restored successfully.")
+            st.rerun()
+        except Exception as exc:
+            st.error(f"Could not restore draft: {exc}")
+
+if st.session_state.get("draft_saved_at"):
+    st.caption(f"Restored draft saved at: {st.session_state['draft_saved_at']}")
+
 st.divider()
 st.subheader("📄 Report")
 report = {
@@ -317,7 +409,7 @@ else:
     st.warning("Add at least one finding before generating the PDF.")
 
 with st.expander("⚙️ Session controls"):
-    st.caption("Reset removes findings from the current browser session.")
+    st.caption("Reset removes findings from the current Streamlit session. Saved JSON draft files on your phone are not deleted.")
     if st.button("Reset all findings", use_container_width=True):
         st.session_state.findings = []
         st.rerun()
