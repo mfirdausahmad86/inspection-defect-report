@@ -60,8 +60,6 @@ st.markdown(
 if "findings" not in st.session_state:
     st.session_state.findings = []
 
-# V1.1.1 hotfix: restore widget-backed state before the widgets are instantiated.
-apply_pending_draft_restore()
 
 
 def clean(value):
@@ -151,6 +149,10 @@ def apply_pending_draft_restore():
     st.session_state["draft_saved_at"] = payload.get("saved_at", "")
     st.session_state["_draft_restore_success"] = True
 
+
+# V1.1.2 hotfix: apply queued restoration only after helper functions are defined,
+# but still before any keyed inspection widgets are instantiated.
+apply_pending_draft_restore()
 
 def footer(canvas, doc):
     canvas.saveState()
@@ -270,7 +272,7 @@ def build_pdf(report, findings):
 st.title("🔎 Site Defect Report")
 if st.session_state.pop("_draft_restore_success", False):
     st.success("Draft restored successfully — inspection details, findings and photos have been recovered.")
-st.markdown('<div class="muted">Mobile-first V1.1.1 • capture photo → record finding → save draft → generate PDF</div>', unsafe_allow_html=True)
+st.markdown('<div class="muted">Mobile-first V1.1.2 • capture photo → record finding → save draft → generate PDF</div>', unsafe_allow_html=True)
 
 with st.expander("📋 Inspection details", expanded=not bool(st.session_state.findings)):
     client = st.text_input("Client", key="client")
