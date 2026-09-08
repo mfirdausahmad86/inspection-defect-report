@@ -60,6 +60,9 @@ st.markdown(
 if "findings" not in st.session_state:
     st.session_state.findings = []
 
+# V1.1.1 hotfix: restore widget-backed state before the widgets are instantiated.
+apply_pending_draft_restore()
+
 
 def clean(value):
     return (value or "").strip()
@@ -112,18 +115,30 @@ def serialize_draft():
     return json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
 
 
-def restore_draft(uploaded_file):
-    """Restore a V1.1 JSON draft into the current Streamlit session."""
+def queue_restore_draft(uploaded_file):
+    """Validate a V1.1 draft and queue it for restoration before widgets are created."""
     uploaded_file.seek(0)
     payload = json.loads(uploaded_file.read().decode("utf-8"))
     if str(payload.get("version")) != "1.1":
         raise ValueError("Unsupported draft version.")
+    st.session_state["_pending_draft_restore"] = payload
+
+
+def apply_pending_draft_restore():
+    """Apply queued draft data early in a fresh rerun, before keyed widgets are instantiated."""
+    payload = st.session_state.pop("_pending_draft_restore", None)
+    if payload is None:
+        return
+
     inspection = payload.get("inspection", {})
     for key in ("client", "site", "equipment", "equipment_id", "inspector",
                 "report_ref", "inspection_type", "scope"):
         st.session_state[key] = inspection.get(key, "")
+
     date_text = inspection.get("inspection_date")
-    st.session_state["inspection_date"] = date.fromisoformat(date_text) if date_text else date.today()
+    st.session_state["inspection_date"] = (
+        date.fromisoformat(date_text) if date_text else date.today()
+    )
 
     restored = []
     for finding in payload.get("findings", []):
@@ -131,8 +146,11 @@ def restore_draft(uploaded_file):
         encoded = item.pop("image_b64", None)
         item["image_bytes"] = base64.b64decode(encoded) if encoded else None
         restored.append(item)
+
     st.session_state.findings = restored
     st.session_state["draft_saved_at"] = payload.get("saved_at", "")
+    st.session_state["_draft_restore_success"] = True
+
 
 def footer(canvas, doc):
     canvas.saveState()
@@ -250,7 +268,9 @@ def build_pdf(report, findings):
 
 
 st.title("🔎 Site Defect Report")
-st.markdown('<div class="muted">Mobile-first V1.1 • capture photo → record finding → save draft → generate PDF</div>', unsafe_allow_html=True)
+if st.session_state.pop("_draft_restore_success", False):
+    st.success("Draft restored successfully — inspection details, findings and photos have been recovered.")
+st.markdown('<div class="muted">Mobile-first V1.1.1 • capture photo → record finding → save draft → generate PDF</div>', unsafe_allow_html=True)
 
 with st.expander("📋 Inspection details", expanded=not bool(st.session_state.findings)):
     client = st.text_input("Client", key="client")
@@ -371,8 +391,7 @@ draft_upload = st.file_uploader(
 if draft_upload is not None:
     if st.button("♻️ RESTORE THIS DRAFT", use_container_width=True):
         try:
-            restore_draft(draft_upload)
-            st.success("Draft restored successfully.")
+            queue_restore_draft(draft_upload)
             st.rerun()
         except Exception as exc:
             st.error(f"Could not restore draft: {exc}")
